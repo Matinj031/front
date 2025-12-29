@@ -1,135 +1,250 @@
 /**
- * Gamatrain AI Composable
+ * Gamatrain AI Composable (v2.0)
  *
- * This composable provides integration with either:
- * - Local Ollama (http://localhost:11434) using /api/chat endpoint
- * - VPS Gamatrain AI (https://ai.gamaedtech.com) using /api/generate endpoint
+ * Features:
+ * - RAG-powered responses
+ * - Streaming support
+ * - Conversation memory (session-based)
+ * - Confidence scores
  *
  * Configure via .env:
- * - NUXT_PUBLIC_AI_API_URL: Base URL (e.g., http://localhost:11434 OR https://ai.gamaedtech.com)
- * - NUXT_PUBLIC_AI_MODEL_NAME: Model name to use
- * - NUXT_PUBLIC_AI_MODE: 'local' for Ollama, 'vps' for Gamatrain VPS (default: auto-detect)
+ * - NUXT_PUBLIC_AI_API_URL: Base URL (e.g., http://localhost:8000)
  *
  * Usage:
  * ```vue
  * <script setup>
- * const { generate, loading, error } = useGamatrainAI()
+ * const { query, queryStream, loading, error, sessionId } = useGamatrainAI()
  *
- * const response = await generate('What is machine learning?')
+ * // Normal response
+ * const response = await query('What is Gamatrain?')
+ *
+ * // Streaming response
+ * await queryStream('What is Gamatrain?', (token) => {
+ *   console.log(token) // Each token as it arrives
+ * })
  * </script>
  * ```
  */
 
-interface Message {
-  role: 'system' | 'user' | 'assistant'
-  content: string
+interface QueryResponse {
+  query: string
+  response: string
+  confidence: 'high' | 'medium' | 'low' | 'direct'
+  similarity_score: number
+  session_id: string
+  source: 'rag' | 'llm'
 }
 
-// Response interface for VPS /api/generate
-interface VPSGenerateResponse {
-  model: string
-  created_at: string
-  response: string
+interface StreamToken {
+  token: string
   done: boolean
   error?: string
 }
+
 export const useGamatrainAI = () => {
   const config = useRuntimeConfig()
   const loading = ref(false)
   const error = ref<string | null>(null)
+  const sessionId = ref(`session_${Date.now()}_${Math.random().toString(36).slice(2)}`)
+  const lastConfidence = ref<string | null>(null)
+  const lastScore = ref<number | null>(null)
+
+  const baseUrl = computed(() =>
+    config.public.aiApiUrl || 'http://localhost:8000',
+  )
 
   /**
-   * Generate a response from the AI
-   * Automatically uses the correct endpoint based on aiMode
+   * Query the AI with RAG (non-streaming)
+   */
+  const query = async (
+    prompt: string,
+    options?: {
+      useRag?: boolean
+    },
+  ): Promise<string> => {
+    loading.value = true
+    error.value = null
+
+    try {
+      const response = await $fetch<QueryResponse>(`${baseUrl.value}/v1/query`, {
+        method: 'POST',
+        body: {
+          query: prompt,
+          session_id: sessionId.value,
+          use_rag: options?.useRag ?? true,
+          stream: false,
+        },
+      })
+
+      lastConfidence.value = response.confidence
+      lastScore.value = response.similarity_score
+
+      return response.response
+    }
+    catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : String(err)
+      error.value = errorMessage || 'An error occurred'
+      throw err
+    }
+    finally {
+      loading.value = false
+    }
+  }
+
+  /**
+   * Query the AI with streaming response
+   */
+  const queryStream = async (
+    prompt: string,
+    onToken: (token: string, done: boolean) => void,
+    options?: {
+      useRag?: boolean
+    },
+  ): Promise<string> => {
+    loading.value = true
+    error.value = null
+    let fullResponse = ''
+
+    try {
+      const response = await fetch(`${baseUrl.value}/v1/query`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          query: prompt,
+          session_id: sessionId.value,
+          use_rag: options?.useRag ?? true,
+          stream: true,
+        }),
+      })
+
+      if (!response.ok) {
+        throw new Error(`HTTP error: ${response.status}`)
+      }
+
+      const reader = response.body?.getReader()
+      const decoder = new TextDecoder()
+
+      if (!reader) {
+        throw new Error('No reader available')
+      }
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        const chunk = decoder.decode(value)
+        const lines = chunk.split('\n')
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const data: StreamToken = JSON.parse(line.slice(6))
+
+              if (data.error) {
+                throw new Error(data.error)
+              }
+
+              fullResponse += data.token
+              onToken(data.token, data.done)
+
+              if (data.done) {
+                loading.value = false
+              }
+            }
+            catch (e) {
+              console.error('Error parsing stream data:', e)
+              // Skip invalid JSON lines
+            }
+          }
+        }
+      }
+
+      return fullResponse
+    }
+    catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : String(err)
+      error.value = errorMessage || 'An error occurred'
+      throw err
+    }
+    finally {
+      loading.value = false
+    }
+  }
+
+  /**
+   * Clear conversation memory and start new session
+   */
+  const clearSession = async (): Promise<void> => {
+    try {
+      await $fetch(`${baseUrl.value}/v1/session/${sessionId.value}`, {
+        method: 'DELETE',
+      })
+    }
+    catch {
+      // Ignore errors
+    }
+
+    // Generate new session ID
+    sessionId.value = `session_${Date.now()}_${Math.random().toString(36).slice(2)}`
+    lastConfidence.value = null
+    lastScore.value = null
+  }
+
+  /**
+   * Check if API is healthy
+   */
+  const healthCheck = async (): Promise<boolean> => {
+    try {
+      const response = await $fetch<{ status: string }>(`${baseUrl.value}/health`)
+      return response.status === 'healthy'
+    }
+    catch {
+      return false
+    }
+  }
+
+  /**
+   * Legacy generate function (for backward compatibility)
+   * @deprecated Use query() instead
    */
   const generate = async (
     prompt: string,
     options?: {
-      model?: string
       systemPrompt?: string
-      temperature?: number
     },
-  ) => {
-    loading.value = true
-    error.value = null
+  ): Promise<string> => {
+    const fullPrompt = options?.systemPrompt
+      ? `${options.systemPrompt}\n\nUser: ${prompt}`
+      : prompt
 
-    try {
-      const fullPrompt = options?.systemPrompt
-        ? `${options.systemPrompt}\n\nUser: ${prompt}`
-        : prompt
-
-      const response = await $fetch<VPSGenerateResponse>(`/api/ai-endpoint/api/generate`, {
-        method: 'POST',
-        body: {
-          model: config.public.aiModelName,
-          prompt: fullPrompt,
-          stream: false,
-        },
-      })
-
-      if (response.error) {
-        throw new Error(response.error)
-      }
-
-      return response.response || ''
-    }
-    catch (err: unknown) {
-      const errorMessage = err instanceof Error ? err.message : String(err)
-      error.value = errorMessage || 'An error occurred'
-      throw err
-    }
-    finally {
-      loading.value = false
-    }
+    return query(fullPrompt, { useRag: true })
   }
 
   /**
-   * Chat with conversation history (Local mode only)
+   * Legacy chat function (for backward compatibility)
+   * @deprecated Use query() with session instead
    */
-  const chat = async (
-    messages: Message[],
-  ) => {
-    loading.value = true
-    error.value = null
-
-    try {
-      // VPS mode: Convert messages to single prompt
-      const lastUserMessage = messages.filter(m => m.role === 'user').pop()
-      const systemMessage = messages.find(m => m.role === 'system')
-
-      const fullPrompt = systemMessage
-        ? `${systemMessage.content}\n\nUser: ${lastUserMessage?.content || ''}`
-        : lastUserMessage?.content || ''
-
-      const response = await $fetch<VPSGenerateResponse>(`/ai-endpoint/api/generate`, {
-        method: 'POST',
-        body: {
-          model: config.aiModelName,
-          prompt: fullPrompt,
-          stream: false,
-        },
-      })
-
-      if (response.error) {
-        throw new Error(response.error)
-      }
-
-      return response.response || ''
-    }
-    catch (err: unknown) {
-      const errorMessage = err instanceof Error ? err.message : String(err)
-      error.value = errorMessage || 'An error occurred'
-      throw err
-    }
-    finally {
-      loading.value = false
-    }
+  const chat = async (messages: Array<{ role: string, content: string }>): Promise<string> => {
+    const lastUserMessage = messages.filter(m => m.role === 'user').pop()
+    return query(lastUserMessage?.content || '')
   }
 
   return {
+    // New API
+    query,
+    queryStream,
+    clearSession,
+    healthCheck,
+
+    // Legacy API (backward compatible)
     generate,
     chat,
+
+    // State
     loading: readonly(loading),
     error: readonly(error),
+    sessionId: readonly(sessionId),
+    lastConfidence: readonly(lastConfidence),
+    lastScore: readonly(lastScore),
   }
 }

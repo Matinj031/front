@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /**
  * Gamatrain AI Chat Page
- * An AI chat interface matching the project design system
+ * AI chat interface with streaming, RAG, and conversation memory
  */
 
 definePageMeta({
@@ -14,25 +14,32 @@ useSeoMeta({
   ogTitle: 'AI Assistant | Gamatrain',
 })
 
-const { generate, loading, error } = useGamatrainAI()
+// Use composable
+const { queryStream, clearSession } = useGamatrainAI()
 
 interface Message {
   id: string
   role: 'user' | 'assistant'
   content: string
   timestamp: Date
+  confidence?: 'high' | 'medium' | 'low' | 'direct'
+  similarityScore?: number
+  isStreaming?: boolean
 }
 
 const messages = ref<Message[]>([])
 const currentQuestion = ref('')
 const messagesContainer = ref<HTMLElement | null>(null)
+const streamingEnabled = ref(true)
+const localError = ref<string | null>(null)
+const isLoading = ref(false)
 
 // Sample quick questions
 const quickQuestions = [
-  { icon: 'md:psychology_alt', text: 'What is artificial intelligence?' },
-  { icon: 'md:psychology', text: 'Explain machine learning' },
-  { icon: 'md:compare_arrows', text: 'Difference between AI and ML?' },
-  { icon: 'md:rocket_launch', text: 'Future of AI in education?' },
+  { icon: 'md:school', text: 'What is Gamatrain?' },
+  { icon: 'md:science', text: 'Explain photosynthesis' },
+  { icon: 'md:calculate', text: 'What is the Pythagorean theorem?' },
+  { icon: 'md:psychology', text: 'How does machine learning work?' },
 ]
 
 // Auto-scroll to bottom when new messages arrive
@@ -43,36 +50,86 @@ watch(messages, async () => {
   }
 }, { deep: true })
 
+// Streaming response handler
+async function streamResponse(question: string): Promise<void> {
+  const assistantMessage: Message = {
+    id: (Date.now() + 1).toString(),
+    role: 'assistant',
+    content: '',
+    timestamp: new Date(),
+    isStreaming: true,
+  }
+  messages.value.push(assistantMessage)
+
+  try {
+    await queryStream(question, (token, done) => {
+      const lastMessage = messages.value[messages.value.length - 1]
+      if (lastMessage && lastMessage.role === 'assistant') {
+        lastMessage.content += token
+        if (done) {
+          lastMessage.isStreaming = false
+        }
+      }
+    })
+  }
+  catch (err) {
+    // Remove empty assistant message on error
+    const lastMessage = messages.value[messages.value.length - 1]
+    if (lastMessage?.role === 'assistant' && !lastMessage.content) {
+      messages.value.pop()
+    }
+    throw err
+  }
+}
+
+// Non-streaming response handler
+async function normalResponse(question: string): Promise<void> {
+  const { query } = useGamatrainAI()
+
+  const response = await query(question)
+  const { lastConfidence, lastScore } = useGamatrainAI()
+
+  const assistantMessage: Message = {
+    id: (Date.now() + 1).toString(),
+    role: 'assistant',
+    content: response,
+    timestamp: new Date(),
+    confidence: lastConfidence.value as Message['confidence'],
+    similarityScore: lastScore.value || undefined,
+  }
+  messages.value.push(assistantMessage)
+}
+
 async function sendMessage() {
-  if (!currentQuestion.value.trim() || loading.value) return
+  if (!currentQuestion.value.trim() || isLoading.value) return
 
   const question = currentQuestion.value
+  localError.value = null
+
   const userMessage: Message = {
     id: Date.now().toString(),
     role: 'user',
     content: question,
     timestamp: new Date(),
   }
-
   messages.value.push(userMessage)
   currentQuestion.value = ''
+  isLoading.value = true
 
   try {
-    const answer = await generate(question, {
-      systemPrompt: 'You are Gamatrain AI, an educational assistant. Be helpful, concise, and accurate. Respond in English.',
-    })
-
-    const assistantMessage: Message = {
-      id: (Date.now() + 1).toString(),
-      role: 'assistant',
-      content: answer,
-      timestamp: new Date(),
+    if (streamingEnabled.value) {
+      await streamResponse(question)
     }
-
-    messages.value.push(assistantMessage)
+    else {
+      await normalResponse(question)
+    }
   }
   catch (err) {
     console.error('Error getting response:', err)
+    localError.value = 'Failed to get response. Please try again.'
+  }
+  finally {
+    isLoading.value = false
   }
 }
 
@@ -81,8 +138,9 @@ function selectQuickQuestion(question: string) {
   sendMessage()
 }
 
-function clearChat() {
+async function clearChat() {
   messages.value = []
+  await clearSession()
 }
 
 function handleKeydown(event: KeyboardEvent) {
@@ -94,6 +152,26 @@ function handleKeydown(event: KeyboardEvent) {
 
 function formatTime(date: Date) {
   return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
+}
+
+function getConfidenceColor(confidence?: string) {
+  switch (confidence) {
+    case 'high': return 'success'
+    case 'medium': return 'warning'
+    case 'low': return 'error'
+    case 'direct': return 'info'
+    default: return 'grey'
+  }
+}
+
+function getConfidenceText(confidence?: string) {
+  switch (confidence) {
+    case 'high': return 'High confidence'
+    case 'medium': return 'Medium confidence'
+    case 'low': return 'Low confidence'
+    case 'direct': return 'Direct response'
+    default: return ''
+  }
 }
 </script>
 
@@ -141,25 +219,41 @@ function formatTime(date: Date) {
                 <div>
                   <span class="gama-text-h6">Gamatrain AI</span>
                   <div class="gama-text-caption text-grey-1">
-                    Online • Ready to help
+                    Online • RAG Enabled • Streaming {{ streamingEnabled ? 'On' : 'Off' }}
                   </div>
                 </div>
               </div>
-              <v-btn
-                variant="outlined"
-                size="small"
-                rounded
-                :disabled="loading || messages.length === 0"
-                @click="clearChat"
-              >
-                <v-icon
-                  start
-                  size="18"
+              <div class="d-flex ga-2">
+                <v-btn
+                  :icon="streamingEnabled ? 'md:stream' : 'md:pause'"
+                  variant="text"
+                  size="small"
+                  :color="streamingEnabled ? 'success' : 'grey'"
+                  @click="streamingEnabled = !streamingEnabled"
                 >
-                  md:refresh
-                </v-icon>
-                New Chat
-              </v-btn>
+                  <v-tooltip
+                    activator="parent"
+                    location="bottom"
+                  >
+                    {{ streamingEnabled ? 'Streaming enabled' : 'Streaming disabled' }}
+                  </v-tooltip>
+                </v-btn>
+                <v-btn
+                  variant="outlined"
+                  size="small"
+                  rounded
+                  :disabled="isLoading || messages.length === 0"
+                  @click="clearChat"
+                >
+                  <v-icon
+                    start
+                    size="18"
+                  >
+                    md:refresh
+                  </v-icon>
+                  New Chat
+                </v-btn>
+              </div>
             </v-card-title>
 
             <v-divider />
@@ -187,7 +281,6 @@ function formatTime(date: Date) {
                 <p class="gama-text-body1 text-grey-darken-1 mb-6 text-center">
                   Ask me anything about your studies. I'm here to help!
                 </p>
-
                 <div class="w-100 suggested-container">
                   <p class="gama-text-caption text-grey-darken-1 mb-3 text-uppercase">
                     Suggested Questions
@@ -249,7 +342,7 @@ function formatTime(date: Date) {
                       :class="message.role === 'user' ? 'align-end' : ''"
                     >
                       <div
-                        class="px-4 py-3 text-body-2 font-weight-medium rounded-xl font-size-12"
+                        class="px-4 py-3 text-body-2 font-weight-medium rounded-xl font-size-12 message-bubble"
                         :class="[
                           message.role === 'user'
                             ? 'bg-primary text-grey-darken-4 rounded-be-sm'
@@ -257,17 +350,32 @@ function formatTime(date: Date) {
                         ]"
                       >
                         {{ message.content }}
+                        <span
+                          v-if="message.isStreaming"
+                          class="typing-cursor"
+                        >|</span>
                       </div>
-                      <div class="mt-1 px-1 gama-text-caption text-grey-lighten-1">
-                        {{ formatTime(message.timestamp) }}
+                      <div class="mt-1 px-1 d-flex align-center ga-2">
+                        <span class="gama-text-caption text-grey-lighten-1">
+                          {{ formatTime(message.timestamp) }}
+                        </span>
+                        <!-- Confidence Badge -->
+                        <v-chip
+                          v-if="message.role === 'assistant' && message.confidence && !message.isStreaming"
+                          :color="getConfidenceColor(message.confidence)"
+                          size="x-small"
+                          variant="tonal"
+                        >
+                          {{ getConfidenceText(message.confidence) }}
+                        </v-chip>
                       </div>
                     </div>
                   </div>
                 </div>
 
-                <!-- Typing Indicator -->
+                <!-- Typing Indicator (only when not streaming) -->
                 <div
-                  v-if="loading"
+                  v-if="isLoading && !messages.some(m => m.isStreaming)"
                   class="d-flex justify-start mb-6 animate-fade-in"
                 >
                   <div class="d-flex ga-2">
@@ -297,13 +405,14 @@ function formatTime(date: Date) {
 
                 <!-- Error Alert -->
                 <v-alert
-                  v-if="error"
+                  v-if="localError"
                   type="error"
                   variant="tonal"
                   class="mx-4 my-2"
                   closable
+                  @click:close="localError = null"
                 >
-                  {{ error }}
+                  {{ localError }}
                 </v-alert>
               </template>
             </div>
@@ -319,7 +428,7 @@ function formatTime(date: Date) {
                 placeholder="Type your question here..."
                 hide-details
                 rounded
-                :disabled="loading"
+                :disabled="isLoading"
                 class="bg-white"
                 aria-autocomplete="none"
                 autocomplete="off"
@@ -331,8 +440,8 @@ function formatTime(date: Date) {
                     variant="flat"
                     color="primary"
                     size="small"
-                    :disabled="!currentQuestion.trim() || loading"
-                    :loading="loading"
+                    :disabled="!currentQuestion.trim() || isLoading"
+                    :loading="isLoading"
                     @click="sendMessage"
                   >
                     <v-icon color="black">
@@ -343,7 +452,6 @@ function formatTime(date: Date) {
               </v-text-field>
             </v-card-actions>
           </v-card>
-
           <p class="gama-text-caption text-grey-lighten-1 text-center mt-3">
             Press Enter to send • Shift+Enter for new line
           </p>
@@ -383,7 +491,22 @@ function formatTime(date: Date) {
   border-color: #E3E5EA;
 }
 
-/* Animations that are hard to do with utility classes only */
+.message-bubble {
+  max-width: 100%;
+  word-wrap: break-word;
+}
+
+/* Typing cursor for streaming */
+.typing-cursor {
+  animation: blink 1s infinite;
+}
+
+@keyframes blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+
+/* Typing dots animation */
 .typing-dot {
   width: 8px;
   height: 8px;
