@@ -33,13 +33,25 @@ interface QueryResponse {
   similarity_score: number
   session_id: string
   source: 'rag' | 'llm'
+  sources?: Source[]
+}
+
+interface Source {
+  type: 'blog' | 'school' | 'multimedia'
+  title: string
+  url: string
+  score?: number
 }
 
 interface StreamToken {
   token: string
   done: boolean
   error?: string
+  sources?: Source[]
+  has_sources?: boolean
 }
+
+export type { Source }
 
 export const useGamatrainAI = () => {
   const config = useRuntimeConfig()
@@ -96,7 +108,7 @@ export const useGamatrainAI = () => {
    */
   const queryStream = async (
     prompt: string,
-    onToken: (token: string, done: boolean) => void,
+    onToken: (token: string, done: boolean, sources?: Source[]) => void,
     options?: {
       useRag?: boolean
     },
@@ -145,7 +157,7 @@ export const useGamatrainAI = () => {
               }
 
               fullResponse += data.token
-              onToken(data.token, data.done)
+              onToken(data.token, data.done, data.sources)
 
               if (data.done) {
                 loading.value = false

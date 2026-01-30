@@ -4,6 +4,8 @@
  * AI chat interface with streaming, RAG, and conversation memory
  */
 
+import type { Source } from '~/composables/useGamatrainAI'
+
 definePageMeta({
   layout: 'default',
 })
@@ -17,6 +19,13 @@ useSeoMeta({
 // Use composable
 const { queryStream, clearSession } = useGamatrainAI()
 
+interface Source {
+  type: 'blog' | 'school' | 'multimedia'
+  title: string
+  url: string
+  score?: number
+}
+
 interface Message {
   id: string
   role: 'user' | 'assistant'
@@ -25,6 +34,7 @@ interface Message {
   confidence?: 'high' | 'medium' | 'low' | 'direct'
   similarityScore?: number
   isStreaming?: boolean
+  sources?: Source[]
 }
 
 const messages = ref<Message[]>([])
@@ -62,12 +72,16 @@ async function streamResponse(question: string): Promise<void> {
   messages.value.push(assistantMessage)
 
   try {
-    await queryStream(question, (token, done) => {
+    await queryStream(question, (token, done, sources) => {
       const lastMessage = messages.value[messages.value.length - 1]
       if (lastMessage && lastMessage.role === 'assistant') {
         lastMessage.content += token
         if (done) {
           lastMessage.isStreaming = false
+          // Add sources if available
+          if (sources && sources.length > 0) {
+            lastMessage.sources = sources
+          }
         }
       }
     })
@@ -172,6 +186,17 @@ function getConfidenceText(confidence?: string) {
     case 'direct': return 'Direct response'
     default: return ''
   }
+}
+
+// Parse markdown links to clickable HTML
+function parseLinks(text: string): string {
+  if (!text) return ''
+
+  // Replace [text](url) with clickable links
+  return text.replace(
+    /\[([^\]]+)\]\(([^)]+)\)/g,
+    '<a href="$2" target="_blank" rel="noopener noreferrer" style="color: #0066cc; text-decoration: underline;">$1</a>',
+  )
 }
 </script>
 
@@ -349,12 +374,26 @@ function getConfidenceText(confidence?: string) {
                             : 'bg-grey-lighten-4 text-grey-darken-3 rounded-bs-sm',
                         ]"
                       >
-                        {{ message.content }}
+                        <div
+                          v-if="message.role === 'assistant'"
+                          class="message-content"
+                          v-html="parseLinks(message.content)"
+                        />
+                        <template v-else>
+                          {{ message.content }}
+                        </template>
                         <span
                           v-if="message.isStreaming"
                           class="typing-cursor"
                         >|</span>
                       </div>
+
+                      <!-- Sources Section -->
+                      <CommonSourcesList
+                        v-if="message.role === 'assistant' && message.sources && message.sources.length > 0 && !message.isStreaming"
+                        :sources="message.sources"
+                        class="mt-2"
+                      />
                       <div class="mt-1 px-1 d-flex align-center ga-2">
                         <span class="gama-text-caption text-grey-lighten-1">
                           {{ formatTime(message.timestamp) }}
@@ -494,6 +533,25 @@ function getConfidenceText(confidence?: string) {
 .message-bubble {
   max-width: 100%;
   word-wrap: break-word;
+}
+
+.message-content {
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+.message-content :deep(a) {
+  color: #0066cc;
+  text-decoration: underline;
+  transition: color 0.2s;
+}
+
+.message-content :deep(a:hover) {
+  color: #0052a3;
+}
+
+.message-content :deep(a:visited) {
+  color: #551a8b;
 }
 
 /* Typing cursor for streaming */
