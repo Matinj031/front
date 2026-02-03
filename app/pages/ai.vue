@@ -4,8 +4,6 @@
  * AI chat interface with streaming, RAG, and conversation memory
  */
 
-import type { Source } from '~/composables/useGamatrainAI'
-
 definePageMeta({
   layout: 'default',
 })
@@ -187,17 +185,6 @@ function getConfidenceText(confidence?: string) {
     default: return ''
   }
 }
-
-// Parse markdown links to clickable HTML
-function parseLinks(text: string): string {
-  if (!text) return ''
-
-  // Replace [text](url) with clickable links
-  return text.replace(
-    /\[([^\]]+)\]\(([^)]+)\)/g,
-    '<a href="$2" target="_blank" rel="noopener noreferrer" style="color: #0066cc; text-decoration: underline;">$1</a>',
-  )
-}
 </script>
 
 <template>
@@ -374,11 +361,17 @@ function parseLinks(text: string): string {
                             : 'bg-grey-lighten-4 text-grey-darken-3 rounded-bs-sm',
                         ]"
                       >
-                        <div
-                          v-if="message.role === 'assistant'"
-                          class="message-content"
-                          v-html="parseLinks(message.content)"
+                        <CommonMathContent
+                          v-if="message.role === 'assistant' && !message.isStreaming"
+                          :key="message.id"
+                          :content="message.content"
                         />
+                        <div
+                          v-else-if="message.role === 'assistant' && message.isStreaming"
+                          class="streaming-text"
+                        >
+                          {{ message.content }}
+                        </div>
                         <template v-else>
                           {{ message.content }}
                         </template>
@@ -535,23 +528,9 @@ function parseLinks(text: string): string {
   word-wrap: break-word;
 }
 
-.message-content {
+.streaming-text {
   white-space: pre-wrap;
   word-wrap: break-word;
-}
-
-.message-content :deep(a) {
-  color: #0066cc;
-  text-decoration: underline;
-  transition: color 0.2s;
-}
-
-.message-content :deep(a:hover) {
-  color: #0052a3;
-}
-
-.message-content :deep(a:visited) {
-  color: #551a8b;
 }
 
 /* Typing cursor for streaming */
