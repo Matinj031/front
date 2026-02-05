@@ -41,7 +41,7 @@ function getSourceEmoji(type: string): string {
       >
         md:library_books
       </v-icon>
-      <span class="gama-text-caption font-weight-bold">منابع مرتبط / Related Sources</span>
+      <span class="gama-text-caption font-weight-bold"> Related Sources</span>
     </div>
 
     <v-list
@@ -74,18 +74,6 @@ function getSourceEmoji(type: string): string {
         </template>
       </v-list-item>
     </v-list>
-
-    <div class="sources-footer">
-      <v-icon
-        size="14"
-        class="mr-1"
-      >
-        md:info
-      </v-icon>
-      <span class="gama-text-caption text-grey-lighten-1">
-        کلیک روی لینک‌ها برای مطالعه بیشتر
-      </span>
-    </div>
   </div>
 </template>
 
