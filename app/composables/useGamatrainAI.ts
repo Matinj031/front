@@ -203,6 +203,83 @@ export const useGamatrainAI = () => {
   }
 
   /**
+   * Regenerate the last response with streaming
+   */
+  const regenerateStream = async (
+    onToken: (token: string, done: boolean, sources?: Source[]) => void,
+    options?: {
+      useRag?: boolean
+    },
+  ): Promise<string> => {
+    loading.value = true
+    error.value = null
+    let fullResponse = ''
+
+    try {
+      const response = await fetch(`${baseUrl.value}/v1/regenerate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          session_id: sessionId.value,
+          use_rag: options?.useRag ?? true,
+          stream: true,
+        }),
+      })
+
+      if (!response.ok) {
+        throw new Error(`HTTP error: ${response.status}`)
+      }
+
+      const reader = response.body?.getReader()
+      const decoder = new TextDecoder()
+
+      if (!reader) {
+        throw new Error('No reader available')
+      }
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        const chunk = decoder.decode(value)
+        const lines = chunk.split('\n')
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const data: StreamToken = JSON.parse(line.slice(6))
+
+              if (data.error) {
+                throw new Error(data.error)
+              }
+
+              fullResponse += data.token
+              onToken(data.token, data.done, data.sources)
+
+              if (data.done) {
+                loading.value = false
+              }
+            }
+            catch (e) {
+              console.error('Error parsing stream data:', e)
+            }
+          }
+        }
+      }
+
+      return fullResponse
+    }
+    catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : String(err)
+      error.value = errorMessage || 'An error occurred'
+      throw err
+    }
+    finally {
+      loading.value = false
+    }
+  }
+
+  /**
    * Check if API is healthy
    */
   const healthCheck = async (): Promise<boolean> => {
@@ -245,6 +322,7 @@ export const useGamatrainAI = () => {
     // New API
     query,
     queryStream,
+    regenerateStream,
     clearSession,
     healthCheck,
 

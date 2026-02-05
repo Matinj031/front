@@ -15,7 +15,7 @@ useSeoMeta({
 })
 
 // Use composable
-const { queryStream, clearSession } = useGamatrainAI()
+const { queryStream, regenerateStream, clearSession } = useGamatrainAI()
 
 interface Source {
   type: 'blog' | 'school' | 'multimedia'
@@ -153,6 +153,58 @@ function selectQuickQuestion(question: string) {
 async function clearChat() {
   messages.value = []
   await clearSession()
+}
+
+// Regenerate last assistant response
+async function regenerateResponse() {
+  if (messages.value.length === 0 || isLoading.value) return
+  
+  // Find the last assistant message
+  const lastAssistantIndex = messages.value.findLastIndex(m => m.role === 'assistant')
+  if (lastAssistantIndex === -1) return
+  
+  // Remove the last assistant message
+  messages.value.splice(lastAssistantIndex, 1)
+  
+  // Create new streaming message
+  const assistantMessage: Message = {
+    id: (Date.now() + 1).toString(),
+    role: 'assistant',
+    content: '',
+    timestamp: new Date(),
+    isStreaming: true,
+  }
+  messages.value.push(assistantMessage)
+  
+  isLoading.value = true
+  localError.value = null
+  
+  try {
+    await regenerateStream((token, done, sources) => {
+      const lastMessage = messages.value[messages.value.length - 1]
+      if (lastMessage && lastMessage.role === 'assistant') {
+        lastMessage.content += token
+        if (done) {
+          lastMessage.isStreaming = false
+          if (sources && sources.length > 0) {
+            lastMessage.sources = sources
+          }
+        }
+      }
+    })
+  }
+  catch (err) {
+    console.error('Error regenerating response:', err)
+    localError.value = 'Failed to regenerate response. Please try again.'
+    // Remove the empty message on error
+    const lastMessage = messages.value[messages.value.length - 1]
+    if (lastMessage?.role === 'assistant' && !lastMessage.content) {
+      messages.value.pop()
+    }
+  }
+  finally {
+    isLoading.value = false
+  }
 }
 
 function handleKeydown(event: KeyboardEvent) {
@@ -400,6 +452,26 @@ function getConfidenceText(confidence?: string) {
                         >
                           {{ getConfidenceText(message.confidence) }}
                         </v-chip>
+                        <!-- Regenerate Button (only for last assistant message) -->
+                        <v-btn
+                          v-if="message.role === 'assistant' && !message.isStreaming && messages.length > 0 && messages[messages.length - 1]?.id === message.id"
+                          icon
+                          size="x-small"
+                          variant="text"
+                          color="grey-darken-1"
+                          :disabled="isLoading"
+                          @click="regenerateResponse"
+                        >
+                          <v-icon size="16">
+                            md:refresh
+                          </v-icon>
+                          <v-tooltip
+                            activator="parent"
+                            location="top"
+                          >
+                            Regenerate response
+                          </v-tooltip>
+                        </v-btn>
                       </div>
                     </div>
                   </div>
