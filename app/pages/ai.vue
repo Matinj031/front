@@ -158,14 +158,14 @@ async function clearChat() {
 // Regenerate last assistant response
 async function regenerateResponse() {
   if (messages.value.length === 0 || isLoading.value) return
-  
+
   // Find the last assistant message
   const lastAssistantIndex = messages.value.findLastIndex(m => m.role === 'assistant')
   if (lastAssistantIndex === -1) return
-  
+
   // Remove the last assistant message
   messages.value.splice(lastAssistantIndex, 1)
-  
+
   // Create new streaming message
   const assistantMessage: Message = {
     id: (Date.now() + 1).toString(),
@@ -175,10 +175,10 @@ async function regenerateResponse() {
     isStreaming: true,
   }
   messages.value.push(assistantMessage)
-  
+
   isLoading.value = true
   localError.value = null
-  
+
   try {
     await regenerateStream((token, done, sources) => {
       const lastMessage = messages.value[messages.value.length - 1]
